@@ -23,7 +23,7 @@ defmodule Bamboo do
       message = """
       All recipients were set to nil. Must specify at least one recipient.
 
-      Full email - #{inspect(email, limit: :infinity)}
+      Full email - #{inspect(email, limit: 150)}
       """
 
       %NilRecipientsError{message: message}
@@ -40,5 +40,9 @@ defmodule Bamboo do
 
     opts = [strategy: :one_for_one, name: Bamboo.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  def json_library do
+    Application.get_env(:bamboo, :json_library, Jason)
   end
 end

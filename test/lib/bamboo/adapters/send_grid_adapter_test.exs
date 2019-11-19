@@ -15,7 +15,7 @@ defmodule Bamboo.SendGridAdapterTest do
       Plug.Parsers,
       parsers: [:urlencoded, :multipart, :json],
       pass: ["*/*"],
-      json_decoder: Poison
+      json_decoder: Jason
     )
 
     plug(:match)
@@ -198,6 +198,94 @@ defmodule Bamboo.SendGridAdapterTest do
     assert personalization["substitutions"] == %{"%foo%" => "bar"}
   end
 
+  test "deliver/2 correctly handles an asm_group_id" do
+    email =
+      new_email(
+        from: {"From", "from@foo.com"},
+        subject: "My Subject"
+      )
+
+    email
+    |> Bamboo.SendGridHelper.with_asm_group_id(1234)
+    |> SendGridAdapter.deliver(@config)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+    assert params["asm"]["group_id"] == 1234
+  end
+
+  test "deliver/2 correctly handles a bypass_list_management" do
+    email =
+      new_email(
+        from: {"From", "from@foo.com"},
+        subject: "My Subject"
+      )
+
+    email
+    |> Bamboo.SendGridHelper.with_bypass_list_management(true)
+    |> SendGridAdapter.deliver(@config)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+    assert params["mail_settings"]["bypass_list_management"]["enable"] == true
+  end
+
+  test "deliver/2 correctly handles with_google_analytics that's enabled with no utm_params" do
+    email =
+      new_email(
+        from: {"From", "from@foo.com"},
+        subject: "My Subject"
+      )
+
+    email
+    |> Bamboo.SendGridHelper.with_google_analytics(true)
+    |> SendGridAdapter.deliver(@config)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+    assert params["tracking_settings"]["ganalytics"]["enable"] == true
+  end
+
+  test "deliver/2 correctly handles with_google_analytics that's disabled with no utm_params" do
+    email =
+      new_email(
+        from: {"From", "from@foo.com"},
+        subject: "My Subject"
+      )
+
+    email
+    |> Bamboo.SendGridHelper.with_google_analytics(false)
+    |> SendGridAdapter.deliver(@config)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+    assert params["tracking_settings"]["ganalytics"]["enable"] == false
+  end
+
+  test "deliver/2 correctly handles with_google_analytics that's enabled with utm_params" do
+    email =
+      new_email(
+        from: {"From", "from@foo.com"},
+        subject: "My Subject"
+      )
+
+    utm_params = %{
+      utm_source: "source",
+      utm_medium: "medium",
+      utm_campaign: "campaign",
+      utm_term: "term",
+      utm_content: "content"
+    }
+
+    email
+    |> Bamboo.SendGridHelper.with_google_analytics(true, utm_params)
+    |> SendGridAdapter.deliver(@config)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+    assert params["tracking_settings"]["ganalytics"]["enable"] == true
+    assert params["tracking_settings"]["ganalytics"]["utm_source"] == "source"
+    assert params["tracking_settings"]["ganalytics"]["utm_medium"] == "medium"
+    assert params["tracking_settings"]["ganalytics"]["utm_campaign"] == "campaign"
+    assert params["tracking_settings"]["ganalytics"]["utm_term"] == "term"
+    assert params["tracking_settings"]["ganalytics"]["utm_content"] == "content"
+  end
+
   test "deliver/2 doesn't force a subject" do
     email = new_email(from: {"From", "from@foo.com"})
 
@@ -217,6 +305,68 @@ defmodule Bamboo.SendGridAdapterTest do
     assert params["reply_to"] == %{"email" => "foo@bar.com"}
   end
 
+  test "deliver/2 correctly formats Reply-To from headers" do
+    email = new_email(headers: %{"Reply-To" => "foo@bar.com"})
+
+    email |> SendGridAdapter.deliver(@config)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+    assert params["reply_to"] == %{"email" => "foo@bar.com"}
+  end
+
+  test "deliver/2 correctly formats Reply-To from headers with name and email" do
+    email = new_email(headers: %{"Reply-To" => {"Foo Bar", "foo@bar.com"}})
+
+    email |> SendGridAdapter.deliver(@config)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+    assert params["reply_to"] == %{"email" => "foo@bar.com", "name" => "Foo Bar"}
+  end
+
+  test "deliver/2 correctly formats reply-to from headers with name and email" do
+    email = new_email(headers: %{"reply-to" => {"Foo Bar", "foo@bar.com"}})
+
+    email |> SendGridAdapter.deliver(@config)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+    assert params["reply_to"] == %{"email" => "foo@bar.com", "name" => "Foo Bar"}
+  end
+
+  test "deliver/2 correctly sends headers" do
+    email =
+      new_email(
+        headers: %{
+          "In-Reply-To" => "message_id",
+          "References" => "message_id"
+        }
+      )
+
+    email |> SendGridAdapter.deliver(@config)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+
+    assert params["headers"] ==
+             %{"In-Reply-To" => "message_id", "References" => "message_id"}
+  end
+
+  test "deliver/2 removes 'reply-to' and 'Reply-To' headers" do
+    email =
+      new_email(
+        headers: %{
+          "X-Custom-Header" => "ohai",
+          "Reply-To" => "something",
+          "reply-to" => {"a", "tuple"}
+        }
+      )
+
+    email |> SendGridAdapter.deliver(@config)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+
+    refute Map.has_key?(params["headers"], "Reply-To")
+    refute Map.has_key?(params["headers"], "reply-to")
+  end
+
   test "deliver/2 omits attachments key if no attachments" do
     email = new_email()
     email |> SendGridAdapter.deliver(@config)
@@ -230,7 +380,19 @@ defmodule Bamboo.SendGridAdapterTest do
     email |> SendGridAdapter.deliver(@config_with_sandbox_enabled)
 
     assert_receive {:fake_sendgrid, %{params: params}}
-    assert params["mail_settings"]["sandbox"] == true
+    assert params["mail_settings"]["sandbox_mode"]["enable"] == true
+  end
+
+  test "deliver/2 with sandbox mode enabled, does not overwrite other mail_settings" do
+    email = new_email()
+
+    email
+    |> Bamboo.SendGridHelper.with_bypass_list_management(true)
+    |> SendGridAdapter.deliver(@config_with_sandbox_enabled)
+
+    assert_receive {:fake_sendgrid, %{params: params}}
+    assert params["mail_settings"]["sandbox_mode"]["enable"] == true
+    assert params["mail_settings"]["bypass_list_management"]["enable"] == true
   end
 
   test "raises if the response is not a success" do

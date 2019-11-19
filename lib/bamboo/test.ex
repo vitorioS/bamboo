@@ -2,10 +2,10 @@ defmodule Bamboo.Test do
   import ExUnit.Assertions
 
   @moduledoc """
-  Helpers for testing email delivery
+  Helpers for testing email delivery.
 
-  Use these helpers with Bamboo.TestAdapter to test email delivery. Typically
-  you'll want to **unit test emails first**. Then in integration tests use
+  Use these helpers with `Bamboo.TestAdapter` to test email delivery. Typically
+  you'll want to **unit test emails first**. Then, in integration tests, use
   helpers from this module to test whether that email was delivered.
 
   ## Note on sending from other processes
@@ -73,7 +73,7 @@ defmodule Bamboo.Test do
   """
 
   @doc """
-  Imports Bamboo.Test and Bamboo.Formatter.format_email_address/2
+  Imports `Bamboo.Test` and `Bamboo.Formatter.format_email_address/2`
 
   `Bamboo.Test` and the `Bamboo.TestAdapter` work by sending a message to the
   current process when an email is delivered. The process mailbox is then
@@ -182,34 +182,81 @@ defmodule Bamboo.Test do
       unsent_email = Bamboo.Email.new_email(subject: "something else")
       assert_email_delivered_with(subject: "something else") # Will fail
 
+  The function will use the Bamboo Formatter when checking email addresses.
+
+      email = Bamboo.Email.new_email(to: "someone@example.com")
+      email |> MyApp.Mailer.deliver
+      assert_email_delivered_with(to: "someone@example.com") # Will pass
+
   You can also pass a regex to match portions of an email.
 
   ## Example
 
       email = new_email(text_body: "I love coffee")
-      assert_email_delivered_with(email, text_body: ~r/love/) # Will pass
-      assert_email_delivered_with(email, text_body: ~r/like/) # Will fail
+      email |> MyApp.Mailer.deliver
+      assert_email_delivered_with(text_body: ~r/love/) # Will pass
+      assert_email_delivered_with(text_body: ~r/like/) # Will fail
   """
   defmacro assert_email_delivered_with(email_params) do
     quote bind_quoted: [email_params: email_params] do
       import ExUnit.Assertions
       assert_receive({:delivered_email, email}, 100, Bamboo.Test.flunk_no_emails_received())
 
-      recieved_email_params = email |> Map.from_struct()
+      received_email_params = email |> Map.from_struct()
 
-      assert Enum.all?(email_params, fn {k, v} -> do_match(recieved_email_params[k], v) end),
-             Bamboo.Test.flunk_attributes_do_not_match(email_params, recieved_email_params)
+      assert Enum.all?(email_params, fn {k, v} -> do_match(received_email_params[k], v, k) end),
+             Bamboo.Test.flunk_attributes_do_not_match(email_params, received_email_params)
+    end
+  end
+
+  @doc """
+  Check that no email was sent with the given parameters
+
+  Similarly to `assert_email_delivered_with`, the assertion waits up to 100ms before
+  failing. Note that you need to send the email again if you want to make other
+  assertions after this, as this will receive the `{:delivered_email, email}` message.
+
+  ## Examples
+
+      Bamboo.Email.new_email(subject: "something") |> MyApp.Mailer.deliver
+      refute_email_delivered_with(subject: "something else") # Will pass
+
+      email = Bamboo.Email.new_email(subject: "something") |> MyApp.Mailer.deliver
+      refute_email_delivered_with(subject: ~r/some/) # Will fail
+  """
+  defmacro refute_email_delivered_with(email_params) do
+    quote bind_quoted: [email_params: email_params] do
+      import ExUnit.Assertions
+
+      received_email_params =
+        receive do
+          {:delivered_email, email} -> Map.from_struct(email)
+        after
+          100 -> []
+        end
+
+      if is_nil(received_email_params) do
+        refute false
+      else
+        refute Enum.any?(email_params, fn {k, v} -> do_match(received_email_params[k], v, k) end),
+               Bamboo.Test.flunk_attributes_match(email_params, received_email_params)
+      end
     end
   end
 
   @doc false
-  def do_match(value1, value2 = %Regex{}) do
+  def do_match(value1, value2 = %Regex{}, _type) do
     Regex.match?(value2, value1)
   end
 
   @doc false
-  def do_match(value1, value2) do
-    value1 == value2
+  def do_match(value1, value2, type) do
+    value1 == value2 || value1 == format(value2, type)
+  end
+
+  @doc false
+  defp format(record, type) do
+    Bamboo.Formatter.format_email_address(record, %{type: type})
   end
 
   @doc false
@@ -251,6 +298,21 @@ defmodule Bamboo.Test do
   def flunk_attributes_do_not_match(params_given, params_received) do
     """
     The parameters given do not match.
+
+      Parameters given:
+
+        #{inspect(params_given)}
+
+      Email received:
+
+        #{inspect(params_received)}
+    """
+  end
+
+  @doc false
+  def flunk_attributes_match(params_given, params_received) do
+    """
+    The parameters given match.
 
       Parameters given:
 

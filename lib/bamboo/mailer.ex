@@ -1,55 +1,56 @@
 defmodule Bamboo.Mailer do
   @moduledoc """
-  Sets up mailers that make it easy to configure and swap adapters.
+  Functions for delivering emails using adapters and delivery strategies.
 
-  Adds `deliver_now/1` and `deliver_later/1` functions to the mailer module it is used by.
+  Adds `deliver_now/1` and `deliver_later/1` functions to the mailer module it
+  is used by.
 
-  ## Bamboo ships with the following adapters
+  Bamboo [ships with several adapters][available-adapters]. It is also possible
+  to create your own adapter.
 
-  * `Bamboo.MandrillAdapter`
-  * `Bamboo.LocalAdapter`
-  * `Bamboo.TestAdapter`
-  * or create your own with `Bamboo.Adapter`
+  See the ["Getting Started" section of the README][getting-started] for an
+  example of how to set up and configure a mailer for use.
+
+  [available-adapters]: https://github.com/thoughtbot/bamboo/tree/master/lib/bamboo/adapters
+  [getting-started]: https://hexdocs.pm/bamboo/readme.html#getting-started
 
   ## Example
 
-      # In your config/config.exs file
-      config :my_app, MyApp.Mailer,
-        adapter: Bamboo.MandrillAdapter,
-        api_key: "my_api_key"
+  Creating a Mailer is as simple as defining a module in your application and
+  using the `Bamboo.Mailer`.
 
-      # Somewhere in your application. Maybe lib/my_app/mailer.ex
+      # some/path/within/your/app/mailer.ex
       defmodule MyApp.Mailer do
-        # Adds deliver_now/1 and deliver_later/1
         use Bamboo.Mailer, otp_app: :my_app
       end
 
-      # Set up your emails
+  The mailer requires some configuration within your application.
+
+      # config/config.exs
+      config :my_app, MyApp.Mailer,
+        adapter: Bamboo.MandrillAdapter, # Specify your preferred adapter
+        api_key: "my_api_key" # Specify adapter-specific configuration
+
+  Also you will want to define an email module for building email structs that
+  your mailer can send. See [`Bamboo.Email`] for more information.
+
+      # some/path/within/your/app/email.ex
       defmodule MyApp.Email do
         import Bamboo.Email
 
         def welcome_email do
-          new_mail(
-            to: "foo@example.com",
-            from: "me@example.com",
-            subject: "Welcome!!!",
-            html_body: "<strong>WELCOME</strong>",
-            text_body: "WELCOME"
+          new_email(
+            to: "john@example.com",
+            from: "support@myapp.com",
+            subject: "Welcome to the app.",
+            html_body: "<strong>Thanks for joining!</strong>",
+            text_body: "Thanks for joining!"
           )
         end
       end
 
-      # In a Phoenix controller or some other module
-      defmodule MyApp.Foo do
-        alias MyApp.Email
-        alias MyApp.Mailer
-
-        def register_user do
-          # Create a user and whatever else is needed
-          # Could also have called Mailer.deliver_later
-          Email.welcome_email |> Mailer.deliver_now
-        end
-      end
+  You are now able to send emails with your mailer module where you sit fit
+  within your application.
   """
 
   @cannot_call_directly_error """
@@ -62,21 +63,31 @@ defmodule Bamboo.Mailer do
 
   defmacro __using__(opts) do
     quote bind_quoted: [opts: opts] do
-      @spec deliver_now(Bamboo.Email.t()) :: Bamboo.Email.t()
-      def deliver_now(email) do
-        config = build_config()
-        Bamboo.Mailer.deliver_now(config.adapter, email, config)
+      @spec deliver_now(Bamboo.Email.t(), Enum.t()) :: Bamboo.Email.t() | {any, Bamboo.Email.t()}
+      def deliver_now(email, opts \\ []) do
+        config = build_config(opts)
+        Bamboo.Mailer.deliver_now(config.adapter, email, config, opts)
       end
 
       @spec deliver_later(Bamboo.Email.t()) :: Bamboo.Email.t()
-      def deliver_later(email) do
-        config = build_config()
+      def deliver_later(email, opts \\ []) do
+        config = build_config(opts)
         Bamboo.Mailer.deliver_later(config.adapter, email, config)
       end
 
       otp_app = Keyword.fetch!(opts, :otp_app)
 
-      defp build_config, do: Bamboo.Mailer.build_config(__MODULE__, unquote(otp_app))
+      defp build_config(config: dynamic_config_overrides) do
+        Bamboo.Mailer.build_config(
+          __MODULE__,
+          unquote(otp_app),
+          dynamic_config_overrides
+        )
+      end
+
+      defp build_config(_) do
+        Bamboo.Mailer.build_config(__MODULE__, unquote(otp_app))
+      end
 
       @spec deliver(any()) :: no_return()
       def deliver(_email) do
@@ -90,17 +101,30 @@ defmodule Bamboo.Mailer do
   end
 
   @doc """
-  Deliver an email right away
+  Deliver an email right away.
 
   Call your mailer with `deliver_now/1` to send an email right away. Call
-  `deliver_later/1` if you want to send in the background to speed things up.
+  `deliver_later/1` if you want to send in the background.
+
+  Pass in an argument of `response: true` if you need access to the response
+  from delivering the email. This returns a tuple of the `Email` struct and the
+  response from calling `deliver` with your adapter. This is useful if you need
+  access to any data sent back from your email provider in the response.
+
+      Email.welcome_email |> Mailer.deliver_now(response: true)
+
+  Pass in an argument of `config: %{}` if you would like to dynamically override
+  any keys in your application's default Mailer configuration.
+
+      Email.welcome_email
+      |> Mailer.deliver_now(config: %{username: "Emma", smtp_port: 2525})
   """
-  def deliver_now(_email) do
+  def deliver_now(_email, _opts \\ []) do
     raise @cannot_call_directly_error
   end
 
   @doc """
-  Deliver an email in the background
+  Deliver an email in the background.
 
   Call your mailer with `deliver_later/1` to send an email using the configured
   `deliver_later_strategy`. If no `deliver_later_strategy` is set,
@@ -108,12 +132,26 @@ defmodule Bamboo.Mailer do
   `Bamboo.DeliverLaterStrategy` to learn how to change how emails are delivered
   with `deliver_later/1`.
   """
-  def deliver_later(_email) do
+  def deliver_later(_email, _opts \\ []) do
     raise @cannot_call_directly_error
   end
 
   @doc false
-  def deliver_now(adapter, email, config) do
+  def deliver_now(adapter, email, config, response: true) do
+    email = email |> validate_and_normalize(adapter)
+
+    if email.to == [] && email.cc == [] && email.bcc == [] do
+      debug_unsent(email)
+      email
+    else
+      debug_sent(email, adapter)
+      response = adapter.deliver(email, config)
+      {email, response}
+    end
+  end
+
+  @doc false
+  def deliver_now(adapter, email, config, _opts) do
     email = email |> validate_and_normalize(adapter)
 
     if email.to == [] && email.cc == [] && email.bcc == [] do
@@ -141,19 +179,23 @@ defmodule Bamboo.Mailer do
   end
 
   defp debug_sent(email, adapter) do
-    Logger.debug("""
-    Sending email with #{inspect(adapter)}:
+    Logger.debug(fn ->
+      """
+      Sending email with #{inspect(adapter)}:
 
-    #{inspect(email, limit: :infinity)}
-    """)
+      #{inspect(email, limit: 150)}
+      """
+    end)
   end
 
   defp debug_unsent(email) do
-    Logger.debug("""
-    Email was not sent because recipients are empty.
+    Logger.debug(fn ->
+      """
+      Email was not sent because recipients are empty.
 
-    Full email - #{inspect(email, limit: :infinity)}
-    """)
+      Full email - #{inspect(email, limit: 150)}
+      """
+    end)
   end
 
   defp validate_and_normalize(email, adapter) do
@@ -211,8 +253,8 @@ defmodule Bamboo.Mailer do
   @doc """
   Wraps to, cc and bcc addresses in a list and normalizes email addresses.
 
-  Also formats the from address. Email normalization/formatting is done by the
-  [Bamboo.Formatter] protocol.
+  Also formats the from address. Email normalization/formatting is done by
+  implementations of the [Bamboo.Formatter] protocol.
   """
   def normalize_addresses(email) do
     %{
@@ -238,10 +280,11 @@ defmodule Bamboo.Mailer do
     build_config(mailer, otp_app)
   end
 
-  def build_config(mailer, otp_app) do
+  def build_config(mailer, otp_app, optional_overrides \\ %{}) do
     otp_app
     |> Application.fetch_env!(mailer)
     |> Map.new()
+    |> Map.merge(optional_overrides)
     |> handle_adapter_config
   end
 

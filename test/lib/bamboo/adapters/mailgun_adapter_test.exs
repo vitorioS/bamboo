@@ -4,6 +4,11 @@ defmodule Bamboo.MailgunAdapterTest do
   alias Bamboo.MailgunAdapter
 
   @config %{adapter: MailgunAdapter, api_key: "dummyapikey", domain: "test.tt"}
+  @config_with_env_var_key %{
+    adapter: MailgunAdapter,
+    api_key: {:system, "MAILGUN_API_KEY"},
+    domain: {:system, "MAILGUN_DOMAIN"}
+  }
 
   defmodule FakeMailgun do
     use Plug.Router
@@ -12,7 +17,7 @@ defmodule Bamboo.MailgunAdapterTest do
       Plug.Parsers,
       parsers: [:urlencoded, :multipart, :json],
       pass: ["*/*"],
-      json_decoder: Poison
+      json_decoder: Jason
     )
 
     plug(:match)
@@ -62,6 +67,19 @@ defmodule Bamboo.MailgunAdapterTest do
     :ok
   end
 
+  test "can read the settings from an ENV var" do
+    System.put_env("MAILGUN_API_KEY", "env_api_key")
+    System.put_env("MAILGUN_DOMAIN", "env_domain")
+
+    config = MailgunAdapter.handle_config(@config_with_env_var_key)
+
+    assert config[:api_key] == "env_api_key"
+    assert config[:domain] == "env_domain"
+
+    System.delete_env("MAILGUN_API_KEY")
+    System.delete_env("MAILGUN_DOMAIN")
+  end
+
   test "raises if the api key is nil" do
     assert_raise ArgumentError, ~r/no api_key set/, fn ->
       MailgunAdapter.handle_config(%{domain: "test.tt"})
@@ -72,6 +90,61 @@ defmodule Bamboo.MailgunAdapterTest do
     assert_raise ArgumentError, ~r/no domain set/, fn ->
       MailgunAdapter.handle_config(%{api_key: "dummyapikey"})
     end
+  end
+
+  test "raises if an invalid ENV var is used for the api_key" do
+    System.put_env("MAILGUN_DOMAIN", "env_domain")
+
+    assert_raise ArgumentError, ~r/no api_key set/, fn ->
+      new_email(from: "foo@bar.com") |> MailgunAdapter.deliver(@config_with_env_var_key)
+    end
+
+    assert_raise ArgumentError, ~r/no api_key set/, fn ->
+      MailgunAdapter.handle_config(@config_with_env_var_key)
+    end
+
+    System.delete_env("MAILGUN_DOMAIN")
+  end
+
+  test "raises if an invalid ENV var is used for the domain" do
+    System.put_env("MAILGUN_API_KEY", "env_api_key")
+
+    assert_raise ArgumentError, ~r/no domain set/, fn ->
+      new_email(from: "foo@bar.com") |> MailgunAdapter.deliver(@config_with_env_var_key)
+    end
+
+    assert_raise ArgumentError, ~r/no domain set/, fn ->
+      MailgunAdapter.handle_config(@config_with_env_var_key)
+    end
+
+    System.delete_env("MAILGUN_API_KEY")
+  end
+
+  test "see if default base_uri is set" do
+    Application.delete_env(:bamboo, :mailgun_base_uri)
+
+    assert MailgunAdapter.handle_config(%{
+             api_key: "dummyapikey",
+             domain: "test.tt"
+           }).base_uri == "https://api.mailgun.net/v3"
+  end
+
+  test "see if given base_uri is set" do
+    assert MailgunAdapter.handle_config(%{
+             api_key: "dummyapikey",
+             domain: "test.tt",
+             base_uri: "https://api.eu.mailgun.net/v3"
+           }).base_uri == "https://api.eu.mailgun.net/v3"
+  end
+
+  test "adapter-level base_uri overrules application env config" do
+    Application.put_env(:bamboo, :mailgun_base_uri, "https://application")
+
+    assert MailgunAdapter.handle_config(%{
+             api_key: "dummyapikey",
+             domain: "test.tt",
+             base_uri: "https://adapter"
+           }).base_uri == "https://adapter"
   end
 
   test "deliver/2 sends the to the right url" do
@@ -111,9 +184,9 @@ defmodule Bamboo.MailgunAdapterTest do
     assert {"authorization", "Basic #{hashed_token}"} in headers
   end
 
-  # We keep two seperate tests, with and without attachment, because the output produced by the adapter changes a lot. (MIME multipart body instead of URL-encoded form)
+  # We keep two separate tests, with and without attachment, because the output produced by the adapter changes a lot. (MIME multipart body instead of URL-encoded form)
   test "deliver/2 sends from, subject, text body, html body, headers, custom vars and attachment" do
-    attachement_source_path = Path.join(__DIR__, "../../../support/attachment.txt")
+    attachment_source_path = Path.join(__DIR__, "../../../support/attachment.txt")
 
     email =
       new_email(
@@ -125,7 +198,7 @@ defmodule Bamboo.MailgunAdapterTest do
       |> Email.put_header("Reply-To", "random@foo.com")
       |> Email.put_header("X-My-Header", "my_header_value")
       |> Email.put_private(:mailgun_custom_vars, %{my_custom_var: 42, other_custom_var: 43})
-      |> Email.put_attachment(attachement_source_path)
+      |> Email.put_attachment(attachment_source_path)
 
     MailgunAdapter.deliver(email, @config)
 
@@ -146,7 +219,7 @@ defmodule Bamboo.MailgunAdapterTest do
 
     assert content_type == "application/octet-stream"
     assert filename == "attachment.txt"
-    assert File.read!(download_path) == File.read!(attachement_source_path)
+    assert File.read!(download_path) == File.read!(attachment_source_path)
 
     hashed_token = Base.encode64("api:" <> @config.api_key)
     assert {"authorization", "Basic #{hashed_token}"} in headers

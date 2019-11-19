@@ -10,6 +10,10 @@ defmodule Bamboo.SendGridAdapter do
 
       put_header("reply-to", "foo@bar.com")
 
+  To set arbitrary email headers, set them in the `headers` property of the [Bamboo.Email](Bamboo.Email) struct.
+  Note that some header names are reserved for use by Sendgrid. See
+  [here](https://sendgrid.com/docs/API_Reference/Web_API_v3/Mail/index.html) for full list.
+
   ## Example config
 
       # In config/config.exs, or config.prod.exs, etc.
@@ -37,12 +41,12 @@ defmodule Bamboo.SendGridAdapter do
 
   def deliver(email, config) do
     api_key = get_key(config)
-    body = email |> to_sendgrid_body(config) |> Poison.encode!()
+    body = email |> to_sendgrid_body(config) |> Bamboo.json_library().encode!()
     url = [base_uri(), @send_message_path]
 
     case :hackney.post(url, headers(api_key), body, [:with_body]) do
       {:ok, status, _headers, response} when status > 299 ->
-        filtered_params = body |> Poison.decode!() |> Map.put("key", "[FILTERED]")
+        filtered_params = body |> Bamboo.json_library().decode!() |> Map.put("key", "[FILTERED]")
         raise_api_error(@service_name, response, filtered_params)
 
       {:ok, status, headers, response} ->
@@ -98,12 +102,16 @@ defmodule Bamboo.SendGridAdapter do
     |> put_from(email)
     |> put_personalization(email)
     |> put_reply_to(email)
+    |> put_headers(email)
     |> put_subject(email)
     |> put_content(email)
     |> put_template_id(email)
     |> put_attachments(email)
     |> put_categories(email)
     |> put_settings(config)
+    |> put_asm_group_id(email)
+    |> put_bypass_list_management(email)
+    |> put_google_analytics(email)
   end
 
   defp put_from(body, %Email{from: from}) do
@@ -121,6 +129,7 @@ defmodule Bamboo.SendGridAdapter do
     |> put_bcc(email)
     |> put_custom_args(email)
     |> put_template_substitutions(email)
+    |> put_dynamic_template_data(email)
   end
 
   defp put_to(body, %Email{to: to}) do
@@ -139,11 +148,34 @@ defmodule Bamboo.SendGridAdapter do
     put_addresses(body, :bcc, bcc)
   end
 
+  defp put_reply_to(body, %Email{headers: %{"reply-to" => {name, email}}}) do
+    Map.put(body, :reply_to, %{email: email, name: name})
+  end
+
   defp put_reply_to(body, %Email{headers: %{"reply-to" => reply_to}}) do
     Map.put(body, :reply_to, %{email: reply_to})
   end
 
+  defp put_reply_to(body, %Email{headers: %{"Reply-To" => {name, email}}}) do
+    Map.put(body, :reply_to, %{email: email, name: name})
+  end
+
+  defp put_reply_to(body, %Email{headers: %{"Reply-To" => reply_to}}) do
+    Map.put(body, :reply_to, %{email: reply_to})
+  end
+
   defp put_reply_to(body, _), do: body
+
+  defp put_headers(body, %Email{headers: headers}) when is_map(headers) do
+    headers_without_tuple_values =
+      headers
+      |> Map.delete("reply-to")
+      |> Map.delete("Reply-To")
+
+    Map.put(body, :headers, headers_without_tuple_values)
+  end
+
+  defp put_headers(body, _), do: body
 
   defp put_subject(body, %Email{subject: subject}) when not is_nil(subject),
     do: Map.put(body, :subject, subject)
@@ -160,7 +192,9 @@ defmodule Bamboo.SendGridAdapter do
     end
   end
 
-  defp put_settings(body, %{sandbox: true}), do: Map.put(body, :mail_settings, %{sandbox: true})
+  defp put_settings(body, %{sandbox: true}),
+    do: Map.put(body, :mail_settings, %{sandbox_mode: %{enable: true}})
+
   defp put_settings(body, _), do: body
 
   defp content(email) do
@@ -195,6 +229,14 @@ defmodule Bamboo.SendGridAdapter do
 
   defp put_template_substitutions(body, _), do: body
 
+  defp put_dynamic_template_data(body, %Email{
+         private: %{send_grid_template: %{dynamic_template_data: dynamic_template_data}}
+       }) do
+    Map.put(body, :dynamic_template_data, dynamic_template_data)
+  end
+
+  defp put_dynamic_template_data(body, _), do: body
+
   defp put_custom_args(body, %Email{private: %{custom_args: custom_args}})
        when is_nil(custom_args) or length(custom_args) == 0,
        do: body
@@ -214,6 +256,43 @@ defmodule Bamboo.SendGridAdapter do
   end
 
   defp put_categories(body, _), do: body
+
+  defp put_asm_group_id(body, %Email{private: %{asm_group_id: asm_group_id}})
+       when is_integer(asm_group_id) do
+    body
+    |> Map.put(:asm, %{group_id: asm_group_id})
+  end
+
+  defp put_asm_group_id(body, _), do: body
+
+  defp put_bypass_list_management(body, %Email{private: %{bypass_list_management: enabled}})
+       when is_boolean(enabled) do
+    mail_settings =
+      body
+      |> Map.get(:mail_settings, %{})
+      |> Map.put(:bypass_list_management, %{enable: enabled})
+
+    body
+    |> Map.put(:mail_settings, mail_settings)
+  end
+
+  defp put_bypass_list_management(body, _), do: body
+
+  defp put_google_analytics(body, %Email{
+         private: %{google_analytics_enabled: enabled, google_analytics_utm_params: utm_params}
+       }) do
+    ganalytics = %{enable: enabled} |> Map.merge(utm_params)
+
+    tracking_settings =
+      body
+      |> Map.get(:tracking_settings, %{})
+      |> Map.put(:ganalytics, ganalytics)
+
+    body
+    |> Map.put(:tracking_settings, tracking_settings)
+  end
+
+  defp put_google_analytics(body, _), do: body
 
   defp put_attachments(body, %Email{attachments: []}), do: body
 

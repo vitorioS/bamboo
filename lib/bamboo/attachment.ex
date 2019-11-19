@@ -4,14 +4,22 @@ defmodule Bamboo.Attachment do
 
   defstruct filename: nil, content_type: nil, path: nil, data: nil
 
+  @type t :: %__MODULE__{
+          path: nil | String.t(),
+          filename: nil | String.t(),
+          content_type: nil | String.t(),
+          data: nil | binary()
+        }
+
   @doc ~S"""
   Creates a new Attachment
 
   Examples:
-    Bamboo.Attachment.new("/path/to/attachment.png")
-    Bamboo.Attachment.new("/path/to/attachment.png", filename: "image.png")
-    Bamboo.Attachment.new("/path/to/attachment.png", filename: "image.png", content_type: "image/png")
-    Bamboo.Attachment.new(params["file"]) # Where params["file"] is a %Plug.Upload
+
+      Bamboo.Attachment.new("/path/to/attachment.png")
+      Bamboo.Attachment.new("/path/to/attachment.png", filename: "image.png")
+      Bamboo.Attachment.new("/path/to/attachment.png", filename: "image.png", content_type: "image/png")
+      Bamboo.Attachment.new(params["file"]) # Where params["file"] is a %Plug.Upload
   """
   def new(path, opts \\ [])
 

@@ -2,18 +2,19 @@ defmodule Bamboo.Email do
   @moduledoc """
   Contains functions for composing emails.
 
-  Bamboo separates composing emails from delivering them. This separation emails
-  easy to test and makes things like using a default layout, or a default from
-  address easy to do. This module is for creating emails. To actually send them,
-  use [Bamboo.Mailer](Bamboo.Mailer.html).
+  Bamboo separates composing emails from delivering them. This separation makes
+  emails easy to test and makes things like using a default layout or a default
+  from address easy to do. This module is for creating emails. To actually send
+  them, use [Bamboo.Mailer](Bamboo.Mailer.html).
 
   ## Handling email addresses
 
-  The from, to, cc and bcc addresses accept a string, a 2 item tuple
-  {name, address}, or anything else that you create that implements the
-  [Bamboo.Formatter](Bamboo.Formatter.html) protocol. The to, cc and bcc fields
-  can also accepts a *list* of any combination of strings, 2 item tuples or
-  anything that implements the Bamboo.Formatter protocol. See
+  The from, to, cc, and bcc addresses of a `Bamboo.Email` can be set to any
+  data structure for which there is an implementation of the
+  [Bamboo.Formatter](Bamboo.Formatter.html) protocol or a list of such data
+  structures. Bamboo includes implementations for some common data structures
+  or you can create your own. All from, to, cc, and bcc addresses are
+  normalized internally to a two item tuple of `{name, address}`. See
   [Bamboo.Formatter](Bamboo.Formatter.html) for more info.
 
   ## Simplest way to create a new email
@@ -42,23 +43,30 @@ defmodule Bamboo.Email do
 
         def welcome_email(user) do
           # Since new_email/1 returns a struct you can update it with Kernel.struct!/2
-          struct!(base_email,
+          struct!(base_email(),
             to: user,
             subject: "Welcome!",
             text_body: "Welcome to the app",
             html_body: "<strong>Welcome to the app</strong>"
           )
-
-          # or you can use functions to build it up step by step
-          base_email
-          |> to(user)
-          |> subject("Welcome!")
-          |> text_body("Welcome to the app")
-          |> html_body("<strong>Welcome to the app</strong>")
         end
 
         def base_email do
           new_email(from: "me@app.com")
+        end
+      end
+
+  In addition to keyword lists, `Bamboo.Email`s can also be built using function pipelines.
+
+      defmodule MyApp.Email do
+        import Bamboo.Email
+
+        def welcome_email(user) do
+          base_email()
+          |> to(user)
+          |> subject("Welcome!")
+          |> text_body("Welcome to the app")
+          |> html_body("<strong>Welcome to the app</strong>")
         end
       end
   """
@@ -116,10 +124,10 @@ defmodule Bamboo.Email do
     @doc """
     Sets the `#{function_name}` on the email.
 
-    You can pass in a string, list of strings,
-    or anything that implements the `Bamboo.Formatter` protocol.
+    `#{function_name}` receives as an argument any data structure for which
+    there is an implementation of the [`Bamboo.Formatter`](Bamboo.Formatter.html) protocol.
 
-        new_email
+        new_email()
         |> #{function_name}(["sally@example.com", "james@example.com"])
     """
     @spec unquote(function_name)(__MODULE__.t(), address_list) :: __MODULE__.t()
@@ -155,7 +163,7 @@ defmodule Bamboo.Email do
   end
 
   @doc """
-  Gets the just the email address from a normalized email address
+  Gets just the email address from a normalized email address
 
   Normalized email addresses are 2 item tuples {name, address}. This gets the
   address part of the tuple. Use this instead of calling `elem(address, 1)`
@@ -203,20 +211,22 @@ defmodule Bamboo.Email do
   end
 
   @doc ~S"""
-  Adds an data attachment to the email
+  Adds a data attachment to the email
 
   ## Example
-    put_attachment(email, %Bamboo.Attachment{})
 
-  Requires the fields filename and data of the %Bamboo.Attachment{} struct to be set.
+      put_attachment(email, %Bamboo.Attachment{})
+
+  Requires the fields filename and data of the `%Bamboo.Attachment{}` struct to be set.
 
   ## Example
-    def create(conn, params) do
-      #...
-      email
-      |> put_attachment(%Bamboo.Attachment{filname: "event.ics", data: "BEGIN:VCALENDAR..."})
-      #...
-    end
+
+      def create(conn, params) do
+        #...
+        email
+        |> put_attachment(%Bamboo.Attachment{filename: "event.ics", data: "BEGIN:VCALENDAR..."})
+        #...
+      end
   """
   def put_attachment(%__MODULE__{attachments: _}, %Attachment{filename: nil} = attachment) do
     raise "You must provide a filename for the attachment, instead got: #{inspect(attachment)}"
@@ -231,22 +241,24 @@ defmodule Bamboo.Email do
   end
 
   @doc ~S"""
-  Adds an file attachment to the email
+  Adds a file attachment to the email
 
   ## Example
-    put_attachment(email, path, opts \\ [])
+
+      put_attachment(email, path, opts \\ [])
 
   Accepts `filename: <name>` and `content_type: <type>` options.
 
   If you are using Plug, it accepts a Plug.Upload struct
 
   ## Example
-    def create(conn, params) do
-      #...
-      email
-      |> put_attachment(params["file"])
-      #...
-    end
+
+      def create(conn, params) do
+        #...
+        email
+        |> put_attachment(params["file"])
+        #...
+      end
   """
   def put_attachment(%__MODULE__{attachments: attachments} = email, path, opts \\ []) do
     %{email | attachments: [Bamboo.Attachment.new(path, opts) | attachments]}
